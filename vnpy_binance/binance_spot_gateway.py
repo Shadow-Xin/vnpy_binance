@@ -10,8 +10,8 @@ from time import sleep
 
 from numpy import format_float_positional
 
-from vnpy_evo.event import Event, EventEngine
-from vnpy_evo.trader.constant import (
+from vnpy.event import Event, EventEngine
+from vnpy.trader.constant import (
     Direction,
     Exchange,
     Product,
@@ -19,8 +19,8 @@ from vnpy_evo.trader.constant import (
     OrderType,
     Interval
 )
-from vnpy_evo.trader.gateway import BaseGateway
-from vnpy_evo.trader.object import (
+from vnpy.trader.gateway import BaseGateway
+from vnpy.trader.object import (
     TickData,
     OrderData,
     TradeData,
@@ -32,10 +32,10 @@ from vnpy_evo.trader.object import (
     SubscribeRequest,
     HistoryRequest
 )
-from vnpy_evo.trader.event import EVENT_TIMER
-from vnpy_evo.trader.utility import round_to
-from vnpy_evo.rest import Request, RestClient, Response
-from vnpy_evo.websocket import WebsocketClient
+from vnpy.trader.event import EVENT_TIMER
+from vnpy.trader.utility import round_to
+from vnpy_rest import Request, RestClient, Response
+from vnpy_websocket import WebsocketClient
 
 
 # Timezone constant
