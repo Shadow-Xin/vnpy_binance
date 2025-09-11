@@ -119,6 +119,7 @@ class BinancePortfolioMarginGateway(BaseGateway):
     default_setting: dict = {
         "API Key": "",
         "API Secret": "",
+        "Order Prefix": "",
         "Server": ["REAL", "TESTNET"],
         "Kline Stream": ["False", "True"],
         "Proxy Host": "",
@@ -151,13 +152,14 @@ class BinancePortfolioMarginGateway(BaseGateway):
         """Start server connections"""
         key: str = setting["API Key"]
         secret: str = setting["API Secret"]
+        order_prefix: str = setting["Order Prefix"]
         server: str = setting["Server"]
         proxy_host: str = setting["Proxy Host"]
         proxy_port: int = setting["Proxy Port"]
 
         kline_stream: bool = setting["Kline Stream"] == "True"
 
-        self.rest_api.connect(key, secret, server, proxy_host, proxy_port)
+        self.rest_api.connect(key, secret, order_prefix, server, proxy_host, proxy_port)
 
         self.um_rest_api.connect(key, secret, server, proxy_host, proxy_port)
         self.cm_rest_api.connect(key, secret, server, proxy_host, proxy_port)
@@ -301,6 +303,7 @@ class PortfolioMarginRestApi(RestClient):
         self,
         key: str,
         secret: str,
+        order_prefix: str,
         server: str,
         proxy_host: str,
         proxy_port: int
@@ -311,8 +314,11 @@ class PortfolioMarginRestApi(RestClient):
         self.proxy_port = proxy_port
         self.proxy_host = proxy_host
         self.server = server
-
-        self.order_prefix = datetime.now().strftime("%y%m%d%H%M%S")
+        
+        if order_prefix:
+            self.order_prefix = order_prefix
+        else:
+            self.order_prefix = datetime.now().strftime("%y%m%d%H%M%S")
 
         if self.server == "REAL":
             self.init(P_REST_HOST, proxy_host, proxy_port)
@@ -1092,7 +1098,7 @@ class BinanceInverseRestApi(RestClient):
                 else:
                     data: dict = resp.json()
                     if not data:
-                        msg: str = f"No kline history data is received, start time: {start_time}"
+                        msg: str = f"No kline history data is received, start time: {int(datetime.timestamp(req.start))}"
                         self.gateway.write_log(msg)
                         break
 
