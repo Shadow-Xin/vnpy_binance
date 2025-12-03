@@ -1,3 +1,8 @@
-from requests import Response
+from .rest_client import RestClient, Request, Response
 
-from .rest_client import Request, RequestStatus, RestClient
+
+__all__ = [
+    "RestClient",
+    "Request",
+    "Response"
+]

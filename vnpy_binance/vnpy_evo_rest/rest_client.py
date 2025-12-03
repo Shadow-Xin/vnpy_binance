@@ -1,107 +1,97 @@
 import sys
 import traceback
 from datetime import datetime
-from enum import Enum
 from multiprocessing.dummy import Pool
+from multiprocessing.pool import ThreadPool
 from queue import Empty, Queue
-from typing import Callable, Optional, Union, Type
+from typing import Any
+from collections.abc import Callable
 from types import TracebackType
 
 import requests
 
 
-CALLBACK_TYPE = Callable[[dict, "Request"], object]
-ON_FAILED_TYPE = Callable[[int, "Request"], object]
-ON_ERROR_TYPE = Callable[[Type, Exception, TracebackType, "Request"], object]
+CALLBACK_TYPE = Callable[[dict | None, "Request"], Any]
+ON_FAILED_TYPE = Callable[[int, "Request"], Any]
+ON_ERROR_TYPE = Callable[[type[BaseException], BaseException, TracebackType, "Request"], Any]
 
 
-class RequestStatus(Enum):
+Response = requests.Response
+
+
+class Request:
     """
-    Request status enum.
-    """
+    Request object
 
-    ready = 0       # Request created
-    success = 1     # Request successful (status code 2xx)
-    failed = 2      # Request failed (status code not 2xx)
-    error = 3       # Exception raised
-
-
-class Request(object):
-    """
-    Request object for status check.
+    method: API request method (GET, POST, PUT, DELETE, QUERY)
+    path: API request path (without base URL)
+    callback: Callback function on request success
+    params: Dictionary of request parameters
+    data: Request body data, dictionaries will be automatically converted to JSON
+    headers: Dictionary of request headers
+    on_failed: Callback function on request failure
+    on_error: Callback function on request exception
+    extra: Any additional data (for use in callbacks)
     """
 
     def __init__(
         self,
         method: str,
         path: str,
-        params: dict,
-        data: Union[dict, str, bytes],
-        headers: dict,
-        callback: CALLBACK_TYPE = None,
-        on_failed: ON_FAILED_TYPE = None,
-        on_error: ON_ERROR_TYPE = None,
-        extra: object = None,
+        params: dict | None,
+        data: dict | str | None,
+        headers: dict | None,
+        callback: CALLBACK_TYPE | None = None,
+        on_failed: ON_FAILED_TYPE | None = None,
+        on_error: ON_ERROR_TYPE | None = None,
+        extra: Any | None = None,
     ) -> None:
-        """"""
+        """Initialize a request object"""
         self.method: str = method
         self.path: str = path
-        self.callback: CALLBACK_TYPE = callback
-        self.params: dict = params
-        self.data: Union[dict, str, bytes] = data
-        self.headers: dict = headers
+        self.callback: CALLBACK_TYPE | None = callback
+        self.params: dict | None = params
+        self.data: dict | str | None = data
+        self.headers: dict | None = headers
 
-        self.on_failed: ON_FAILED_TYPE = on_failed
-        self.on_error: ON_ERROR_TYPE = on_error
-        self.extra: object = extra
+        self.on_failed: ON_FAILED_TYPE | None = on_failed
+        self.on_error: ON_ERROR_TYPE | None = on_error
+        self.extra: Any | None = extra
 
-        self.response: requests.Response = None
-        self.status: RequestStatus = RequestStatus.ready
+        self.response: requests.Response | None = None
 
     def __str__(self) -> str:
-        """"""
+        """String representation of the request"""
         if self.response is None:
             status_code = "terminated"
         else:
-            status_code = self.response.status_code
+            status_code = str(self.response.status_code)
 
-        return (
-            "request : {} {} {} because {}: \n"
-            "headers: {}\n"
-            "params: {}\n"
-            "data: {}\n"
-            "response:"
-            "{}\n".format(
-                self.method,
-                self.path,
-                self.status.name,
-                status_code,
-                self.headers,
-                self.params,
-                self.data,
-                "" if self.response is None else self.response.text,
-            )
-        )
+        text: str = f"request : {self.method} {self.path} because {status_code}: \n"
+        text += f"headers: {self.headers}\n"
+        text += f"params: {self.params}\n"
+        text += f"data: {self.data!r}\n"
+        text += f"response: {self.response.text if self.response else ''}\n"
+        return text
 
 
-class RestClient(object):
+class RestClient:
     """
-    HTTP Client designed for all sorts of trading RESTFul API.
-    * Reimplement sign function to add signature function.
-    * Reimplement on_failed function to handle Non-2xx responses.
-    * Use on_failed parameter in add_request function for individual Non-2xx response handling.
-    * Reimplement on_error function to handle exception msg.
+    Asynchronous client for various REST APIs
+
+    * Override the sign method to implement request signature logic
+    * Override the on_failed method to implement standard callback handling for request failures
+    * Override the on_error method to implement standard callback handling for request exceptions
     """
 
     def __init__(self) -> None:
-        """"""
+        """Constructor"""
         self.url_base: str = ""
         self.active: bool = False
 
         self.queue: Queue = Queue()
-        self.pool: Pool = None
 
-        self.proxies: dict = None
+        self.proxies: dict | None = None
 
     def init(
         self,
@@ -110,7 +100,11 @@ class RestClient(object):
         proxy_port: int = 0
     ) -> None:
         """
-        Init rest client with url_base which is the API root address.
+        Initialize the client with the REST API base URL
+
+        :param url_base: Base URL for the REST API
+        :param proxy_host: Proxy host address
+        :param proxy_port: Proxy port number
         """
         self.url_base = url_base
 
@@ -118,27 +112,25 @@ class RestClient(object):
             proxy: str = f"http://{proxy_host}:{proxy_port}"
             self.proxies = {"http": proxy, "https": proxy}
 
-    def start(self, session_count: int = 5) -> None:
+    def start(self, n: int = 5) -> None:
         """
-        Start rest client with session_count number of threads.
+        Start the client
+
+        :param n: Number of worker threads
         """
         if self.active:
             return
-
         self.active = True
-        self.pool = Pool(session_count)
+
+        self.pool: ThreadPool = Pool(n)
         self.pool.apply_async(self.run)
 
     def stop(self) -> None:
-        """
-        Stop rest client immediately.
-        """
+        """Stop the client"""
         self.active = False
 
     def join(self) -> None:
-        """
-        Wait till all requests are processed.
-        """
+        """Wait for threads to complete"""
         self.queue.join()
 
     def add_request(
@@ -146,25 +138,26 @@ class RestClient(object):
         method: str,
         path: str,
         callback: CALLBACK_TYPE,
-        params: dict = None,
-        data: Union[dict, str, bytes] = None,
-        headers: dict = None,
-        on_failed: ON_FAILED_TYPE = None,
-        on_error: ON_ERROR_TYPE = None,
-        extra: object = None,
+        params: dict | None = None,
+        data: dict | str | None = None,
+        headers: dict | None = None,
+        on_failed: ON_FAILED_TYPE | None = None,
+        on_error: ON_ERROR_TYPE | None = None,
+        extra: Any | None = None,
     ) -> Request:
         """
-        Add a new request.
-        :param method: GET, POST, PUT, DELETE, QUERY
-        :param path: url path for query
-        :param callback: callback function if 2xx status, type: (dict, Request)
-        :param params: dict for query string
-        :param data: Http body. If it is a dict, it will be converted to form-data. Otherwise, it will be converted to bytes.
-        :param headers: dict for headers
-        :param on_failed: callback function if Non-2xx status, type, type: (code, dict, Request)
-        :param on_error: callback function when catching Python exception, type: (etype, evalue, tb, Request)
-        :param extra: object extra data which can be used when handling callback
-        :return: Request
+        Add a new request task
+
+        :param method: HTTP method
+        :param path: API endpoint path
+        :param callback: Callback function for successful responses
+        :param params: Query parameters
+        :param data: Request body data
+        :param headers: HTTP headers
+        :param on_failed: Callback for failed requests
+        :param on_error: Callback for request exceptions
+        :param extra: Additional data to pass to callbacks
+        :return: Request object
         """
         request: Request = Request(
             method,
@@ -181,12 +174,12 @@ class RestClient(object):
         return request
 
     def run(self) -> None:
-        """"""
+        """Process tasks in each thread"""
         try:
-            session: requests.Session = requests.session()
+            session = requests.session()
             while self.active:
                 try:
-                    request: Request = self.queue.get(timeout=1)
+                    request = self.queue.get(timeout=1)
                     try:
                         self.process_request(request, session)
                     finally:
@@ -194,123 +187,152 @@ class RestClient(object):
                 except Empty:
                     pass
         except Exception:
-            et, ev, tb = sys.exc_info()
-            self.on_error(et, ev, tb, None)
+            exc, value, tb = sys.exc_info()
+            if exc and value and tb:
+                self.on_error(exc, value, tb, None)
 
-    def sign(self, request: Request) -> RequestStatus:
+    def sign(self, request: Request) -> Request:
         """
-        This function is called before sending object request out.
-        Please implement signature method here.
+        Signature function (override to implement specific signature logic)
+
+        :param request: Request to sign
+        :return: Signed request
         """
         return request
 
     def on_failed(self, status_code: int, request: Request) -> None:
         """
-        Default on_failed handler for Non-2xx response.
+        Default callback for request failures
+
+        :param status_code: HTTP status code
+        :param request: Failed request
         """
         print("RestClient on failed" + "-" * 10)
         print(str(request))
 
     def on_error(
         self,
-        exception_type: type,
-        exception_value: Exception,
+        exc: type[BaseException],
+        value: BaseException,
         tb: TracebackType,
-        request: Optional[Request],
+        request: Request | None,
     ) -> None:
         """
-        Default on_error handler for Python exception.
+        Default callback for request exceptions
+
+        :param exc: Exception class
+        :param value: Exception instance
+        :param tb: Traceback object
+        :param request: Request that caused the exception
         """
         try:
             print("RestClient on error" + "-" * 10)
-            print(self.exception_detail(exception_type, exception_value, tb, request))
+            print(self.exception_detail(exc, value, tb, request))
         except Exception:
             traceback.print_exc()
 
     def exception_detail(
         self,
-        exception_type: type,
-        exception_value: Exception,
+        exc: type[BaseException],
+        value: BaseException,
         tb: TracebackType,
-        request: Optional[Request],
+        request: Request | None,
     ) -> str:
-        text: str = "[{}]: Unhandled RestClient Error:{}\n".format(
-            datetime.now().isoformat(), exception_type
-        )
-        text += "request:{}\n".format(request)
+        """
+        Convert exception information to string
+
+        :param exc: Exception class
+        :param value: Exception instance
+        :param tb: Traceback object
+        :param request: Request that caused the exception
+        :return: Formatted exception details
+        """
+        text = f"[{datetime.now().isoformat()}]: Unhandled RestClient Error:{exc}\n"
+        text += f"request:{request}\n"
         text += "Exception trace: \n"
-        text += "".join(
-            traceback.format_exception(exception_type, exception_value, tb)
-        )
+        text += "".join(traceback.format_exception(exc, value, tb))
         return text
 
     def process_request(self, request: Request, session: requests.Session) -> None:
         """
-        Sending request to server and get result.
+        Send request to server and process response
+
+        :param request: Request to process
+        :param session: Requests session
         """
         try:
+            # Sign the request
             request = self.sign(request)
 
-            url: str = self.make_full_url(request.path)
-
-            response: requests.Response = session.request(
+            # Send synchronous request
+            response: Response = session.request(
                 request.method,
-                url,
+                self.make_full_url(request.path),
                 headers=request.headers,
                 params=request.params,
                 data=request.data,
                 proxies=self.proxies,
+                timeout=10,
             )
+
+            # Bind response to request
             request.response = response
 
-            status_code: int = response.status_code
-            if status_code // 100 == 2:  # 2xx codes are all successful
-                json_body: dict = None
+            # Parse response data
+            status_code = response.status_code
+
+            if status_code // 100 == 2:  # 2xx indicates success
+                json_body: dict | None = None
+
                 if status_code != 204:
                     json_body = response.json()
 
-                request.callback(json_body, request)
-                request.status = RequestStatus.success
+                if request.callback:
+                    request.callback(json_body, request)
             else:
-                request.status = RequestStatus.failed
-
                 if request.on_failed:
                     request.on_failed(status_code, request)
                 else:
                     self.on_failed(status_code, request)
         except Exception:
-            request.status = RequestStatus.error
-            t, v, tb = sys.exc_info()
-            if request.on_error:
-                request.on_error(t, v, tb, request)
-            else:
-                self.on_error(t, v, tb, request)
+            # Get exception information
+            exc, value, tb = sys.exc_info()
+
+            # Push exception callback
+            if exc and value and tb:
+                if request.on_error:
+                    request.on_error(exc, value, tb, request)
+                else:
+                    self.on_error(exc, value, tb, request)
 
     def make_full_url(self, path: str) -> str:
         """
-        Make relative api path into full url.
-        eg: make_full_url("/get") == "http://xxxxx/get"
+        Combine base URL and path to generate full request URL
+
+        :param path: API endpoint path
+        :return: Complete URL
         """
-        url = self.url_base + path
-        return url
+        return self.url_base + path
 
     def request(
         self,
         method: str,
         path: str,
-        params: dict = None,
-        data: dict = None,
-        headers: dict = None,
-    ) -> requests.Response:
+        params: dict | None = None,
+        data: dict | None = None,
+        headers: dict | None = None,
+    ) -> Response:
         """
-        Add a new request.
-        :param method: GET, POST, PUT, DELETE, QUERY
-        :param path: url path for query
-        :param params: dict for query string
-        :param data: dict for body
-        :param headers: dict for headers
-        :return: requests.Response
+        Make a synchronous request
+
+        :param method: HTTP method
+        :param path: API endpoint path
+        :param params: Query parameters
+        :param data: Request body data
+        :param headers: HTTP headers
+        :return: Response object
         """
+        # Create request object
         request: Request = Request(
             method,
             path,
@@ -318,13 +340,14 @@ class RestClient(object):
             data,
             headers
         )
+
+        # Sign the request
         request = self.sign(request)
 
-        url: str = self.make_full_url(request.path)
-
-        response: requests.Response = requests.request(
+        # Send synchronous request
+        response: Response = requests.request(
             request.method,
-            url,
+            self.make_full_url(request.path),
             headers=request.headers,
             params=request.params,
             data=request.data,

@@ -2,7 +2,6 @@ import json
 import ssl
 import traceback
 from threading import Thread
-from typing import Optional
 
 import websocket
 
@@ -33,12 +32,12 @@ class WebsocketClient:
         self.active: bool = False
         self.host: str = ""
 
-        self.wsapp: websocket.WebSocketApp = None
-        self.thread: Thread = None
+        self.wsapp: websocket.WebSocketApp | None = None
+        self.thread: Thread | None = None
 
-        self.proxy_host: Optional[str] = None
-        self.proxy_port: Optional[int] = None
-        self.header: Optional[dict] = None
+        self.proxy_host: str = ""
+        self.proxy_port: int = 0
+        self.header: dict | None = None
         self.ping_interval: int = 0
         self.receive_timeout: int = 0
 
@@ -51,7 +50,7 @@ class WebsocketClient:
         proxy_port: int = 0,
         ping_interval: int = 10,
         receive_timeout: int = 60,
-        header: dict = None,
+        header: dict | None = None,
         trace: bool = False
     ) -> None:
         """
@@ -92,9 +91,10 @@ class WebsocketClient:
         """
         if not self.active:
             return
-
         self.active = False
-        self.wsapp.close()
+
+        if self.wsapp:
+            self.wsapp.close()
 
     def join(self) -> None:
         """
@@ -102,7 +102,8 @@ class WebsocketClient:
 
         This function cannot be called from worker thread or callback function.
         """
-        self.thread.join()
+        if self.thread:
+            self.thread.join()
 
     def send_packet(self, packet: dict) -> None:
         """
@@ -111,22 +112,23 @@ class WebsocketClient:
         override this if you want to send non-json packet
         """
         text: str = json.dumps(packet)
-        self.wsapp.send(text)
+        if self.wsapp:
+            self.wsapp.send(text)
 
     def run(self) -> None:
         """
         Keep running till stop is called.
         """
-        def on_open(wsapp: websocket.WebSocketApp) -> None:
+        def on_open(wsapp: websocket.WebSocket) -> None:
             self.on_connected()
 
-        def on_close(wsapp: websocket.WebSocketApp, status_code: int, msg: str) -> None:
+        def on_close(wsapp: websocket.WebSocket, status_code: int, msg: str) -> None:
             self.on_disconnected(status_code, msg)
 
-        def on_error(wsapp: websocket.WebSocketApp, e: Exception) -> None:
+        def on_error(wsapp: websocket.WebSocket, e: Exception) -> None:
             self.on_error(e)
 
-        def on_message(wsapp: websocket.WebSocketApp, message: str) -> None:
+        def on_message(wsapp: websocket.WebSocket, message: str) -> None:
             self.on_message(message)
 
         self.wsapp = websocket.WebSocketApp(
@@ -138,7 +140,7 @@ class WebsocketClient:
             on_message=on_message
         )
 
-        proxy_type: Optional[str] = None
+        proxy_type: str = ""
         if self.proxy_host:
             proxy_type = "http"
 
@@ -169,7 +171,7 @@ class WebsocketClient:
         """
         pass
 
-    def on_packet(packet: dict) -> None:
+    def on_packet(self, packet: dict) -> None:
         """
         Callback when receiving data from server.
         """
