@@ -294,6 +294,15 @@ class RestClient:
                     request.on_failed(status_code, request)
                 else:
                     self.on_failed(status_code, request)
+
+        except requests.exceptions.Timeout:
+            fake_status_code = 'request timeout'
+            
+            if request.on_failed:
+                request.on_failed(fake_status_code, request)
+            else:
+                self.on_failed(fake_status_code, request)
+
         except Exception:
             # Get exception information
             exc, value, tb = sys.exc_info()
