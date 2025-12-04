@@ -272,7 +272,7 @@ class RestClient:
                 params=request.params,
                 data=request.data,
                 proxies=self.proxies,
-                timeout=10,
+                timeout=60,
             )
 
             # Bind response to request
