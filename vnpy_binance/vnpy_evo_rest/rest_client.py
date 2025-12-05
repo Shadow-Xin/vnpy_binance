@@ -272,7 +272,7 @@ class RestClient:
                 params=request.params,
                 data=request.data,
                 proxies=self.proxies,
-                timeout=60,
+                timeout=30,
             )
 
             # Bind response to request
@@ -294,14 +294,6 @@ class RestClient:
                     request.on_failed(status_code, request)
                 else:
                     self.on_failed(status_code, request)
-
-        except requests.exceptions.Timeout:
-            fake_status_code = 'request timeout'
-            
-            if request.on_failed:
-                request.on_failed(fake_status_code, request)
-            else:
-                self.on_failed(fake_status_code, request)
 
         except Exception:
             # Get exception information
