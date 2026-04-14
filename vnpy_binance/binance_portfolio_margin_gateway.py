@@ -376,6 +376,9 @@ class PortfolioMarginRestApi(RestClient):
                 frozen=float(asset_data["totalWalletBalance"])-float(asset_data["crossMarginFree"]),
                 gateway_name=self.gateway_name
             )
+            # 如果返回了余额为0的资产，跳过
+            if account.balance == 0:
+                continue
             self.gateway.on_account(account)
 
         # self.gateway.write_log("Portfolio Margin Account data received")
