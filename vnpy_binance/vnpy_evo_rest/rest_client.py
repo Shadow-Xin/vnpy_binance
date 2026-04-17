@@ -1,5 +1,6 @@
 import sys
 import traceback
+from time import sleep
 from datetime import datetime
 from multiprocessing.dummy import Pool
 from multiprocessing.pool import ThreadPool
@@ -182,6 +183,23 @@ class RestClient:
                     request = self.queue.get(timeout=1)
                     try:
                         self.process_request(request, session)
+                        # 1. 安全提取 status（如果没有该属性则返回 None，不报错）
+                        status = getattr(request, "status", None)
+                        status_name = getattr(status, "name", str(status))
+                        
+                        # 2. 安全提取 response
+                        response = getattr(request, "response", None)
+                        
+                        # 判断是否发生了底层网络异常/卡死：
+                        if status_name == "error" or response is None:
+                            print("检测到网络异常或连接池卡死，正在强制重建 Session...")
+                            try:
+                                session.close()
+                            except Exception:
+                                pass
+                            
+                            session = requests.session()
+                            sleep(1) # 冷却1秒，防止风控
                     finally:
                         self.queue.task_done()
                 except Empty:
