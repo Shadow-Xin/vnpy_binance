@@ -1,7 +1,5 @@
 import sys
 import traceback
-from enum import Enum
-from time import sleep
 from datetime import datetime
 from multiprocessing.dummy import Pool
 from multiprocessing.pool import ThreadPool
@@ -19,16 +17,6 @@ ON_ERROR_TYPE = Callable[[type[BaseException], BaseException, TracebackType, "Re
 
 
 Response = requests.Response
-
-class RequestStatus(Enum):
-    """
-    Request status enum.
-    """
-
-    ready = 0       # Request created
-    success = 1     # Request successful (status code 2xx)
-    failed = 2      # Request failed (status code not 2xx)
-    error = 3       # Exception raised
 
 
 class Request:
@@ -194,15 +182,6 @@ class RestClient:
                     request = self.queue.get(timeout=1)
                     try:
                         self.process_request(request, session)
-                        if request.status == RequestStatus.error:
-                            print(f"检测到请求异常或连接池卡死，正在强制重建 Session...")
-                            try:
-                                session.close() # 尝试关闭旧连接，释放资源
-                            except Exception:
-                                pass
-                            
-                            session = requests.session() # 重新创建一个干净的连接池
-                            sleep(1) # 稍微休眠 1 秒，避免被币安风控
                     finally:
                         self.queue.task_done()
                 except Empty:
