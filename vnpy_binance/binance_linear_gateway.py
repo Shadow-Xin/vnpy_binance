@@ -46,13 +46,17 @@ UTC_TZ = ZoneInfo("UTC")
 F_REST_HOST: str = "https://fapi.binance.com"
 F_WEBSOCKET_TRADE_HOST: str = "wss://ws-fapi.binance.com/ws-fapi/v1"
 F_WEBSOCKET_USER_HOST: str = "wss://fstream.binance.com/ws/"
-F_WEBSOCKET_DATA_HOST: str = "wss://fstream.binance.com/stream"
+F_WEBSOCKET_MARKET_DATA_HOST: str = "wss://fstream.binance.com/market/stream"
+F_WEBSOCKET_PUBLIC_DATA_HOST: str = "wss://fstream.binance.com/public/stream"
 
 # Testnet server hosts
 F_TESTNET_REST_HOST: str = "https://testnet.binancefuture.com"
 F_TESTNET_WEBSOCKET_TRADE_HOST: str = "wss://testnet.binancefuture.com/ws-fapi/v1"
 F_TESTNET_WEBSOCKET_USER_HOST: str = "wss://stream.binancefuture.com/ws/"
-F_TESTNET_WEBSOCKET_DATA_HOST: str = "wss://stream.binancefuture.com/stream"
+# Binance testnet does not expose the new public/market split endpoints yet,
+# so both feeds still fall back to the legacy combined stream host.
+F_TESTNET_WEBSOCKET_MARKET_DATA_HOST: str = "wss://stream.binancefuture.com/stream"
+F_TESTNET_WEBSOCKET_PUBLIC_DATA_HOST: str = "wss://stream.binancefuture.com/stream"
 
 # Order status map
 STATUS_BINANCES2VT: dict[str, Status] = {
@@ -869,7 +873,7 @@ class BinanceLinearUserWebsocketApi(WebsocketClient):
         self.gateway.write_log(f"Trade Websocket API exception: {e}")
 
 
-class BinanceLinearDataWebsocketApi(WebsocketClient):
+class BinanceLinearDataWebsocketApi:
     """The data websocket API of BinanceLinearGateway"""
 
     def __init__(self, gateway: BinanceLinearGateway) -> None:
@@ -886,6 +890,8 @@ class BinanceLinearDataWebsocketApi(WebsocketClient):
         self.ticks: dict[str, TickData] = {}
         self.reqid: int = 0
         self.kline_stream: bool = False
+        self.market_ws_api: BinanceLinearMarketWebsocketApi = BinanceLinearMarketWebsocketApi(self)
+        self.public_ws_api: BinanceLinearPublicWebsocketApi = BinanceLinearPublicWebsocketApi(self)
 
     def connect(
         self,
@@ -896,45 +902,24 @@ class BinanceLinearDataWebsocketApi(WebsocketClient):
     ) -> None:
         """Start server connection"""
         self.kline_stream = kline_stream
+        self.market_ws_api.connect(server, proxy_host, proxy_port)
+        self.public_ws_api.connect(server, proxy_host, proxy_port)
 
-        if server == "REAL":
-            self.init(F_WEBSOCKET_DATA_HOST, proxy_host, proxy_port, receive_timeout=WEBSOCKET_TIMEOUT)
-        else:
-            self.init(F_TESTNET_WEBSOCKET_DATA_HOST, proxy_host, proxy_port, receive_timeout=WEBSOCKET_TIMEOUT)
-
-        self.start()
-
-    def on_connected(self) -> None:
-        """Callback when server is connected"""
-        self.gateway.write_log("Data Websocket API is connected")
-
-        # Resubscribe market data
-        if self.ticks:
-            channels = []
-            for symbol in self.ticks.keys():
-                channels.append(f"{symbol}@ticker")
-                channels.append(f"{symbol}@depth10")
-
-                if self.kline_stream:
-                    channels.append(f"{symbol}@kline_1m")
-
-            req: dict = {
-                "method": "SUBSCRIBE",
-                "params": channels,
-                "id": self.reqid
-            }
-            self.send_packet(req)
+    def stop(self) -> None:
+        """Stop all market data websocket connections"""
+        self.market_ws_api.stop()
+        self.public_ws_api.stop()
 
     def subscribe(self, req: SubscribeRequest) -> None:
         """Subscribe market data"""
-        if req.symbol in self.ticks:
+        symbol: str = req.symbol.lower()
+
+        if symbol in self.ticks:
             return
 
         if req.symbol not in symbol_contract_map:
             self.gateway.write_log(f"Symbol not found {req.symbol}")
             return
-
-        self.reqid += 1
 
         # Initialize tick object
         tick: TickData = TickData(
@@ -945,34 +930,40 @@ class BinanceLinearDataWebsocketApi(WebsocketClient):
             gateway_name=self.gateway_name,
         )
         tick.extra = {}
-        self.ticks[req.symbol.lower()] = tick
+        self.ticks[symbol] = tick
 
-        channels = [
-            f"{req.symbol.lower()}@ticker",
-            f"{req.symbol.lower()}@depth10"
-        ]
+        self.market_ws_api.subscribe_symbol(symbol)
+        self.public_ws_api.subscribe_symbol(symbol)
+
+    def next_reqid(self) -> int:
+        """Get the next websocket request id"""
+        self.reqid += 1
+        return self.reqid
+
+    def get_market_channels(self, symbol: str) -> list[str]:
+        """Get ticker/kline channels for the market websocket"""
+        channels: list[str] = [f"{symbol}@ticker"]
 
         if self.kline_stream:
-            channels.append(f"{req.symbol.lower()}@kline_1m")
+            channels.append(f"{symbol}@kline_1m")
 
-        req: dict = {
-            "method": "SUBSCRIBE",
-            "params": channels,
-            "id": self.reqid
-        }
-        self.send_packet(req)
+        return channels
+
+    def get_public_channels(self, symbol: str) -> list[str]:
+        """Get depth channels for the public websocket"""
+        return [f"{symbol}@depth10"]
 
     def on_packet(self, packet: dict) -> None:
         """Callback of data update"""
-        stream: str = packet.get("stream", None)
+        stream, data = self.parse_packet(packet)
 
-        if not stream:
+        if not stream or not data:
             return
 
-        data: dict = packet["data"]
-
-        symbol, channel = stream.split("@")
-        tick: TickData = self.ticks[symbol]
+        symbol, channel = stream.split("@", 1)
+        tick: TickData | None = self.ticks.get(symbol)
+        if not tick:
+            return
 
         if channel == "ticker":
             tick.volume = float(data["v"])
@@ -994,7 +985,7 @@ class BinanceLinearDataWebsocketApi(WebsocketClient):
                 price, volume = asks[n]
                 tick.__setattr__("ask_price_" + str(n + 1), float(price))
                 tick.__setattr__("ask_volume_" + str(n + 1), float(volume))
-        else:
+        elif channel.startswith("kline_"):
             kline_data: dict = data["k"]
 
             # Check if bar is closed
@@ -1017,20 +1008,159 @@ class BinanceLinearDataWebsocketApi(WebsocketClient):
                 close_price=float(kline_data["c"]),
                 gateway_name=self.gateway_name
             )
+        else:
+            return
 
         if tick.last_price:
             tick.localtime = datetime.now()
             self.gateway.on_tick(copy(tick))
 
+    def parse_packet(self, packet: dict) -> tuple[str | None, dict | None]:
+        """Normalize combined-stream and raw-stream packet formats"""
+        stream: str | None = packet.get("stream", None)
+        data: dict | None = packet.get("data", None)
+
+        if stream and isinstance(data, dict):
+            return stream, data
+
+        raw_data: dict = data if isinstance(data, dict) else packet
+        if not isinstance(raw_data, dict):
+            return None, None
+
+        symbol: str = raw_data.get("s", "").lower()
+        if not symbol:
+            return None, None
+
+        event: str = raw_data.get("e", "")
+        if event == "24hrTicker":
+            channel = "ticker"
+        elif event == "depthUpdate":
+            channel = "depth10"
+        elif event == "kline":
+            interval: str = raw_data.get("k", {}).get("i", "1m")
+            channel = f"kline_{interval}"
+        else:
+            return None, None
+
+        return f"{symbol}@{channel}", raw_data
+
+
+class BinanceLinearChannelWebsocketApi(WebsocketClient):
+    """Base class for split market data websocket connections"""
+
+    def __init__(
+        self,
+        data_api: "BinanceLinearDataWebsocketApi",
+        connect_message: str,
+        disconnect_name: str,
+        real_host: str,
+        testnet_host: str
+    ) -> None:
+        """Initialize channel-specific websocket API"""
+        super().__init__()
+
+        self.data_api: BinanceLinearDataWebsocketApi = data_api
+        self.gateway: BinanceLinearGateway = data_api.gateway
+        self.gateway_name: str = data_api.gateway_name
+
+        self.connect_message: str = connect_message
+        self.disconnect_name: str = disconnect_name
+        self.real_host: str = real_host
+        self.testnet_host: str = testnet_host
+
+    def connect(self, server: str, proxy_host: str, proxy_port: int) -> None:
+        """Start server connection"""
+        if server == "REAL":
+            host: str = self.real_host
+        else:
+            host = self.testnet_host
+
+        self.init(host, proxy_host, proxy_port, receive_timeout=WEBSOCKET_TIMEOUT)
+        self.start()
+
+    def on_connected(self) -> None:
+        """Callback when server is connected"""
+        self.gateway.write_log(self.connect_message)
+        self.resubscribe()
+
+    def subscribe_symbol(self, symbol: str) -> None:
+        """Subscribe channel streams for a symbol"""
+        channels: list[str] = self.get_channels(symbol)
+        if channels:
+            self.send_subscribe(channels)
+
+    def resubscribe(self) -> None:
+        """Resubscribe all channel streams after reconnect"""
+        channels: list[str] = []
+
+        for symbol in self.data_api.ticks.keys():
+            channels.extend(self.get_channels(symbol))
+
+        if channels:
+            self.send_subscribe(channels)
+
+    def send_subscribe(self, channels: list[str]) -> None:
+        """Send a websocket subscribe request"""
+        req: dict = {
+            "method": "SUBSCRIBE",
+            "params": channels,
+            "id": self.data_api.next_reqid()
+        }
+        self.send_packet(req)
+
+    def on_packet(self, packet: dict) -> None:
+        """Forward packets to the shared market data parser"""
+        self.data_api.on_packet(packet)
+
     def on_disconnected(self, status_code: int, msg: str) -> None:
         """Callback when server is disconnected"""
-        self.gateway.write_log(f"Data Websocket API is disconnected, code: {status_code}, msg: {msg}")
+        self.gateway.write_log(
+            f"{self.disconnect_name} is disconnected, code: {status_code}, msg: {msg}"
+        )
 
     def on_error(self, e: Exception) -> None:
-        """
-        Callback when exception raised.
-        """
-        self.gateway.write_log(f"Data Websocket API exception: {e}")
+        """Callback when exception raised"""
+        self.gateway.write_log(f"{self.disconnect_name} exception: {e}")
+
+    def get_channels(self, symbol: str) -> list[str]:
+        """Get all websocket channels for a symbol"""
+        raise NotImplementedError
+
+
+class BinanceLinearMarketWebsocketApi(BinanceLinearChannelWebsocketApi):
+    """The market websocket API for ticker and kline streams"""
+
+    def __init__(self, data_api: "BinanceLinearDataWebsocketApi") -> None:
+        """Initialize market websocket API"""
+        super().__init__(
+            data_api,
+            "Linear Market Data Websocket API is connected",
+            "Linear Market Data Websocket API",
+            F_WEBSOCKET_MARKET_DATA_HOST,
+            F_TESTNET_WEBSOCKET_MARKET_DATA_HOST
+        )
+
+    def get_channels(self, symbol: str) -> list[str]:
+        """Get market websocket channels for a symbol"""
+        return self.data_api.get_market_channels(symbol)
+
+
+class BinanceLinearPublicWebsocketApi(BinanceLinearChannelWebsocketApi):
+    """The public websocket API for depth streams"""
+
+    def __init__(self, data_api: "BinanceLinearDataWebsocketApi") -> None:
+        """Initialize public websocket API"""
+        super().__init__(
+            data_api,
+            "Linear Public Data Websocket API is connected",
+            "Linear Public Data Websocket API",
+            F_WEBSOCKET_PUBLIC_DATA_HOST,
+            F_TESTNET_WEBSOCKET_PUBLIC_DATA_HOST
+        )
+
+    def get_channels(self, symbol: str) -> list[str]:
+        """Get public websocket channels for a symbol"""
+        return self.data_api.get_public_channels(symbol)
 
 
 class BinanceLinearTradeWebsocketApi(WebsocketClient):

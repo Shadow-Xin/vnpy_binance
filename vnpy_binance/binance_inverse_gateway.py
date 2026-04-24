@@ -878,7 +878,7 @@ class BinanceInverseTradeWebsocketApi(WebsocketClient):
 
 
 class BinanceInverseDataWebsocketApi(WebsocketClient):
-    """The data websocket API of BinanceInversetGateway"""
+    """The Inverse Data Websocket API of BinanceInversetGateway"""
 
     def __init__(self, gateway: BinanceInverseGateway) -> None:
         """
@@ -914,7 +914,7 @@ class BinanceInverseDataWebsocketApi(WebsocketClient):
 
     def on_connected(self) -> None:
         """Callback when server is connected"""
-        self.gateway.write_log("Data Websocket API is connected")
+        self.gateway.write_log("Inverse Data Websocket API is connected")
 
         # Resubscribe market data
         if self.ticks:
@@ -1032,13 +1032,13 @@ class BinanceInverseDataWebsocketApi(WebsocketClient):
 
     def on_disconnected(self, status_code: int, msg: str) -> None:
         """Callback when server is disconnected"""
-        self.gateway.write_log(f"Data Websocket API is disconnected, code: {status_code}, msg: {msg}")
+        self.gateway.write_log(f"Inverse Data Websocket API is disconnected, code: {status_code}, msg: {msg}")
 
     def on_error(self, e: Exception) -> None:
         """
         Callback when exception raised.
         """
-        self.gateway.write_log(f"Data Websocket API exception: {e}")
+        self.gateway.write_log(f"Inverse Data Websocket API exception: {e}")
 
 
 def generate_datetime(timestamp: float) -> datetime:
